@@ -4,7 +4,21 @@ from pathlib import Path
 
 import pytest
 
-from dynan.core import ConfigError, _decide, _nproc_ceiling, _sandbox_unavailable, ddmin, execute, load_yaml, parse_error, source_diff
+from dynan.core import (
+    ConfigError,
+    _classify_security,
+    _decide,
+    _functional_regressions,
+    _nproc_ceiling,
+    _register_generated_case,
+    _sandbox_unavailable,
+    ddmin,
+    execute,
+    load_yaml,
+    parse_error,
+    source_diff,
+    validate,
+)
 
 
 def test_duplicate_yaml_key_is_rejected(tmp_path: Path) -> None:
@@ -25,6 +39,9 @@ def test_sanitizer_output_is_classified() -> None:
     assert finding is not None
     assert finding["error_type"] == "stack-buffer-overflow"
     assert finding["function"] == "copy_value"
+    assert finding["identity"] == "stack-buffer-overflow:copy_value:src/tool.c"
+    assert finding["signature"].endswith(":42")
+    assert finding["frames"] == [{"function": "copy_value", "file": "src/tool.c", "line": 42}]
 
 
 def test_bubblewrap_namespace_failure_is_recognized() -> None:
@@ -97,3 +114,47 @@ def test_diff_reports_changed_function(tmp_path: Path) -> None:
 def test_exit_code_precedence(arguments: tuple[bool, str, bool, bool], expected: int) -> None:
     """Apply the assignment's required exit-code priority."""
     assert _decide(*arguments)[1] == expected
+
+
+def test_missing_configuration_returns_standard_error_code(tmp_path: Path) -> None:
+    """Configuration failures must be CI-readable rather than uncaught tracebacks."""
+    report, code = validate(tmp_path / "missing.yaml")
+    assert code == 30
+    assert report["verdict"] == "BUILD_OR_CONFIG_ERROR"
+    assert "No such file" in report["error"]
+
+
+def test_new_finding_identity_is_not_mislabeled_as_remaining() -> None:
+    """A different patched error is a new issue even on a known test id."""
+    base = {"case": {"finding": {"identity": "overflow:copy:a.c", "signature": "old"}}}
+    patched = {"case": {"finding": {"identity": "use-after-free:read:b.c", "signature": "new"}}}
+    status, remaining, new = _classify_security(base, patched)
+    assert status == "NEW_ISSUE"
+    assert not remaining
+    assert set(new) == {"case"}
+
+
+def test_boundary_and_invalid_failures_are_functional_regressions() -> None:
+    """Reference behavior is mandatory outside the plain valid category too."""
+    cases = [
+        {"id": "edge", "category": "boundary"},
+        {"id": "bad", "category": "invalid"},
+    ]
+    runs = [
+        {"id": test_id, "version": version, "profile": "release", "oracle_passed": passed}
+        for test_id in ("edge", "bad")
+        for version, passed in (("base", True), ("patched", False))
+    ]
+    assert _functional_regressions(cases, runs) == ["bad", "edge"]
+
+
+def test_generated_regression_registry_keeps_smallest_duplicate(tmp_path: Path) -> None:
+    """Repeated runs must not grow duplicate entries for the same dynamic issue."""
+    case = {"id": "security_case", "delivery": "stdin", "expect": {"exit_code": 2}}
+    finding = {"identity": "overflow:copy:a.c", "signature": "overflow:copy:a.c:9"}
+    for data in (b"0123456789", b"FAIL", b"a much larger duplicate"):
+        _register_generated_case(tmp_path, "demo", case, data, finding, "base", None)
+    registry = tmp_path / "generated-tests" / "demo" / "regressions.json"
+    entries = __import__("json").loads(registry.read_text())
+    assert len(entries) == 1
+    assert (registry.parent / entries[0]["input_file"]).read_bytes() == b"FAIL"

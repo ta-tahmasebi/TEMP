@@ -87,6 +87,8 @@ def _print_summary(report: dict[str, object], code: int, *, verbose: bool) -> No
     hardening = report.get("hardening", {}).get("patched") if report.get("hardening") else None
     if hardening:
         print("Hardening   : " + ", ".join(f"{key}={value}" for key, value in hardening.items()))
+    for warning in report.get("hardening_warnings", []):
+        print(f"WARNING     : {warning}")
     isolation = report.get("isolation")
     if isolation:
         print(
