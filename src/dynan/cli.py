@@ -53,7 +53,13 @@ def _print_test_details(report: dict[str, object]) -> None:
         termination = "timeout" if run.get("timed_out") else (
             f"signal={run.get('signal')}" if run.get("signal") else f"exit={run.get('exit_code')}"
         )
-        print(f"  {run['version']}/{run['profile']} {run['id']}: {state} ({termination}, {run['duration_s']}s)")
+        isolation = "fallback" if run.get("sandbox_fallback") else (
+            "bwrap" if run.get("sandbox_used") else "disabled"
+        )
+        print(
+            f"  {run['version']}/{run['profile']} {run['id']}: {state} "
+            f"({termination}, {run['duration_s']}s, sandbox={isolation})"
+        )
 
 
 def _print_summary(report: dict[str, object], code: int, *, verbose: bool) -> None:
@@ -80,6 +86,12 @@ def _print_summary(report: dict[str, object], code: int, *, verbose: bool) -> No
     hardening = report.get("hardening", {}).get("patched") if report.get("hardening") else None
     if hardening:
         print("Hardening   : " + ", ".join(f"{key}={value}" for key, value in hardening.items()))
+    isolation = report.get("isolation")
+    if isolation:
+        print(
+            f"Isolation   : {isolation['status']} "
+            f"(fallback runs={isolation['fallback_runs']}, resource limits=enabled)"
+        )
     print(f"Evidence    : {report.get('results_path', 'not written')}")
     if verbose:
         _print_test_details(report)

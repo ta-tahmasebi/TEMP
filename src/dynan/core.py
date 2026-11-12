@@ -126,6 +126,18 @@ def _sandboxed(command: list[str], cwd: Path, enabled: bool) -> list[str]:
     ]
 
 
+def _sandbox_unavailable(stderr: str) -> bool:
+    """Recognize Bubblewrap setup failures that occur before the child starts."""
+    text = stderr.lower()
+    return text.startswith("bwrap:") and any(marker in text for marker in (
+        "creating new namespace failed",
+        "no permissions to create new namespace",
+        "operation not permitted",
+        "resource temporarily unavailable",
+        "setting up uid map",
+    ))
+
+
 def execute(
     command: list[str], cwd: Path, *, data: bytes | None = None,
     timeout: float = 10, memory_mb: int = 1024, cpu_s: int = 10,
@@ -134,11 +146,25 @@ def execute(
     """Execute one isolated command and capture complete termination evidence."""
     started = time.monotonic()
     try:
+        wrapped = _sandboxed(command, cwd, sandbox)
         completed = subprocess.run(
-            _sandboxed(command, cwd, sandbox), cwd=cwd, input=data,
+            wrapped, cwd=cwd, input=data,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
             env=env, preexec_fn=_limits(memory_mb, cpu_s), check=False,
         )
+        sandbox_used = sandbox
+        fallback_reason = None
+        first_stderr = completed.stderr.decode("utf-8", "replace")
+        if sandbox and completed.returncode != 0 and _sandbox_unavailable(first_stderr):
+            # Some CI and desktop shells disable user namespaces. Resource limits
+            # still apply, and the report records that filesystem isolation degraded.
+            fallback_reason = first_stderr.strip()
+            completed = subprocess.run(
+                command, cwd=cwd, input=data,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+                env=env, preexec_fn=_limits(memory_mb, cpu_s), check=False,
+            )
+            sandbox_used = False
         code = completed.returncode
         return {
             "command": command, "exit_code": code if code >= 0 else None,
@@ -146,6 +172,8 @@ def execute(
             "timed_out": False, "stdout": completed.stdout.decode("utf-8", "replace"),
             "stderr": completed.stderr.decode("utf-8", "replace"),
             "duration_s": round(time.monotonic() - started, 4),
+            "sandbox_requested": sandbox, "sandbox_used": sandbox_used,
+            "sandbox_fallback": fallback_reason,
         }
     except subprocess.TimeoutExpired as exc:
         return {
@@ -153,6 +181,8 @@ def execute(
             "stdout": (exc.stdout or b"").decode("utf-8", "replace"),
             "stderr": (exc.stderr or b"").decode("utf-8", "replace"),
             "duration_s": round(time.monotonic() - started, 4),
+            "sandbox_requested": sandbox, "sandbox_used": sandbox,
+            "sandbox_fallback": None,
         }
 
 
@@ -441,6 +471,8 @@ def validate(
                 builds[(version, profile)] = built
                 report["builds"].append(built)
                 state = "ok" if built["ok"] else "failed"
+                if any(log.get("sandbox_fallback") for log in built["logs"]):
+                    state += " (Bubblewrap unavailable; resource-limit fallback used)"
                 note("build", f"{version}/{profile}: {state}")
         build_error = not all(item["ok"] for item in builds.values())
         if build_error:
@@ -463,7 +495,9 @@ def validate(
             batch = report["tests"][first:]
             passed = sum(item["oracle_passed"] for item in batch)
             findings = sum(item["finding"] is not None for item in batch)
-            note("run", f"{build['version']}/{build['profile']}: oracle {passed}/{len(batch)} passed, findings={findings}")
+            fallbacks = sum(item.get("sandbox_fallback") is not None for item in batch)
+            isolation = f", sandbox fallbacks={fallbacks}" if fallbacks else ""
+            note("run", f"{build['version']}/{build['profile']}: oracle {passed}/{len(batch)} passed, findings={findings}{isolation}")
 
         # Security status is derived only from sanitizer-backed security cases.
         security_runs = [run for run in report["tests"] if run["category"] == "security" and run["profile"] == "sanitized"]
@@ -528,6 +562,14 @@ def validate(
                     "patched_signature": (run_case(builds[("patched", "sanitized")], case, manifest_path.parent, config, run_dir, reduced).get("finding") or {}).get("signature"),
                 })
         complete = bool(base_findings) and bool(diff) and bool(report["reproducers"])
+        all_runs = [log for build in report["builds"] for log in build["logs"]] + report["tests"]
+        fallback_runs = sum(run.get("sandbox_fallback") is not None for run in all_runs)
+        report["isolation"] = {
+            "requested": bool(config.get("sandbox", {}).get("enabled", True)),
+            "status": "degraded" if fallback_runs else "isolated",
+            "fallback_runs": fallback_runs,
+            "resource_limits_applied": True,
+        }
         verdict, code = _decide(False, security, bool(regressions), complete)
         report.update({
             "security_status": security, "functional_regressions": sorted(regressions),

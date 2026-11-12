@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dynan.core import ConfigError, _decide, ddmin, load_yaml, parse_error, source_diff
+from dynan.core import ConfigError, _decide, _sandbox_unavailable, ddmin, execute, load_yaml, parse_error, source_diff
 
 
 def test_duplicate_yaml_key_is_rejected(tmp_path: Path) -> None:
@@ -25,6 +25,39 @@ def test_sanitizer_output_is_classified() -> None:
     assert finding is not None
     assert finding["error_type"] == "stack-buffer-overflow"
     assert finding["function"] == "copy_value"
+
+
+def test_bubblewrap_namespace_failure_is_recognized() -> None:
+    """Allow a controlled fallback only for sandbox setup failures."""
+    assert _sandbox_unavailable("bwrap: Creating new namespace failed: Resource temporarily unavailable\n")
+    assert not _sandbox_unavailable("compiler: source file not found\n")
+
+
+def test_execution_retries_when_bubblewrap_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep resource-limited execution working when user namespaces are disabled."""
+    calls: list[list[str]] = []
+
+    class Result:
+        """Provide the subprocess fields consumed by the executor."""
+
+        def __init__(self, code: int, stdout: bytes, stderr: bytes) -> None:
+            self.returncode, self.stdout, self.stderr = code, stdout, stderr
+
+    def fake_run(command: list[str], **_: object) -> Result:
+        """Fail Bubblewrap setup once, then emulate a successful direct command."""
+        calls.append(command)
+        if command[0] == "bwrap":
+            return Result(1, b"", b"bwrap: Creating new namespace failed: Resource temporarily unavailable\n")
+        return Result(0, b"ok\n", b"")
+
+    monkeypatch.setattr("dynan.core.shutil.which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr("dynan.core.subprocess.run", fake_run)
+    result = execute(["demo"], tmp_path, sandbox=True)
+
+    assert [command[0] for command in calls] == ["bwrap", "demo"]
+    assert result["exit_code"] == 0
+    assert result["sandbox_used"] is False
+    assert "namespace failed" in result["sandbox_fallback"]
 
 
 def test_minimizer_preserves_predicate() -> None:
