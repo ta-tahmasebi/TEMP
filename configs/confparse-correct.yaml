@@ -1,8 +1,3 @@
-# dynAn configuration - confparse / correct patch
-#
-# Expected verdict: exit 0 (PASS)
-#
-# All paths are relative to this file.
 version: 1
 
 target:
@@ -24,9 +19,6 @@ build:
   env:
     CC: gcc
   timeout_s: 300
-  # Release and sanitized profiles are supplied by dynAn's defaults; the
-  # target's Makefile reads CFLAGS/LDFLAGS from the environment, so no
-  # target-side change is needed to support either profile.
 
 execution:
   argv: ["{binary}"]
@@ -37,12 +29,10 @@ execution:
     cpu_s: 10
 
 tests:
-  manifests:
-    - ../targets/confparse/tests/manifest.yaml
-  regression_suite: ../regression-suite/confparse-correct
+  manifest: ../targets/confparse/tests/manifest.yaml
 
 sandbox:
-  backend: bwrap
+  enabled: true
 
 analysis:
   replay_count: 3

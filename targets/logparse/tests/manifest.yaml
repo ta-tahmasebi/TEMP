@@ -1,0 +1,69 @@
+version: 1
+oracle:
+  provenance: targets/logparse/SPEC.md
+tests:
+  - id: valid_pipe
+    category: valid
+    input: "INFO|ready\n"
+    expect:
+      exit_code: 0
+      stdout_exact: "[INFO] ready\n"
+      provenance: SPEC.md
+  - id: valid_colon
+    category: valid
+    input: "WARN:disk low\n"
+    expect:
+      exit_code: 0
+      stdout_exact: "[WARN] disk low\n"
+      provenance: SPEC.md
+  - id: valid_long
+    category: valid
+    input: "INFO|abcdefghijklmnopqrst\n"
+    expect:
+      exit_code: 0
+      stdout_exact: "[INFO] abcdefghijklmnopqrst\n"
+      provenance: SPEC.md
+  - id: boundary_31
+    category: boundary
+    input: "INFO|1234567890123456789012345678901\n"
+    expect:
+      exit_code: 0
+      stdout_exact: "[INFO] 1234567890123456789012345678901\n"
+      provenance: SPEC.md
+  - id: boundary_32
+    category: boundary
+    input: "INFO|12345678901234567890123456789012\n"
+    expect:
+      exit_code: 2
+      stderr_contains: ["message too long"]
+      provenance: SPEC.md
+  - id: invalid_level
+    category: invalid
+    input: "DEBUG|message\n"
+    expect:
+      exit_code: 2
+      stderr_contains: ["invalid level"]
+      provenance: SPEC.md
+  - id: invalid_separator
+    category: invalid
+    input: "INFO message\n"
+    expect:
+      exit_code: 2
+      stderr_contains: ["missing separator"]
+      provenance: SPEC.md
+  - id: security_pipe
+    category: security
+    input: "INFO|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+    expect:
+      exit_code: 2
+      stderr_contains: ["message too long"]
+      must_not_crash: true
+      provenance: SPEC.md
+  - id: security_colon
+    category: security
+    input: "INFO:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n"
+    expect:
+      exit_code: 2
+      stderr_contains: ["message too long"]
+      must_not_crash: true
+      provenance: SPEC.md

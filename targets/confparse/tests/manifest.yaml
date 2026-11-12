@@ -1,9 +1,5 @@
 version: 1
 
-# Every expectation below is derived from SPEC.md, which was written before
-# the patches existed. No expectation was read off a program's output: the
-# project specification requires the correctness oracle to be independent of
-# the patched version.
 oracle:
   provenance: "targets/confparse/SPEC.md"
 
@@ -12,7 +8,6 @@ defaults:
   timeout_s: 10
 
 tests:
-  # ---------------------------------------------------------------- valid
   - id: valid_basic
     category: valid
     description: "Both separators in one input; SPEC section 7, first example."
@@ -74,7 +69,6 @@ tests:
         ok 1
       provenance: "SPEC.md section 3, rule 3"
 
-  # ------------------------------------------------------------- boundary
   - id: boundary_value_15
     category: boundary
     description: "Value of exactly 15 characters: the largest accepted value."
@@ -116,7 +110,6 @@ tests:
       stderr_contains: ["error: line 1: key too long"]
       provenance: "SPEC.md sections 3, 5 and 6"
 
-  # -------------------------------------------------------------- invalid
   - id: invalid_no_separator
     category: invalid
     description: "A line with neither '=' nor ':'."
@@ -143,12 +136,6 @@ tests:
       exit_code: 2
       stderr_contains: ["error: line 1: invalid key"]
       provenance: "SPEC.md section 3 rule 2, section 5"
-
-  # ------------------------------------------- input / output mechanisms
-  # confparse accepts its input on stdin, from a named file, or inline via
-  # -c, and can write its result to a file with -o. The same behaviour must
-  # hold through every one of those paths (SPEC.md section 8), so each is
-  # exercised explicitly rather than assumed.
 
   - id: delivery_file_input
     category: valid
@@ -212,10 +199,6 @@ tests:
         exact: ""
       provenance: "SPEC.md section 8, output destination"
 
-  # ------------------------------------------------------------- security
-  # These inputs exceed the specified value length by a wide margin. A
-  # conforming implementation rejects them cleanly; the vulnerable base
-  # version overflows a fixed-size stack buffer instead.
   - id: security_oversized_value_equals
     category: security
     description: "64-character value reaching the copy sink through the '=' path."

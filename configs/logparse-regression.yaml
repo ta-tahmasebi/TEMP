@@ -1,0 +1,26 @@
+version: 1
+target:
+  name: logparse-regression
+source:
+  base_path: ../targets/logparse/base
+  patched_path: ../targets/logparse/regression
+build:
+  binary: build/logparse
+  commands:
+    - [make, clean]
+    - [make]
+execution:
+  argv: ["{binary}"]
+  delivery: stdin
+  timeout_s: 5
+  limits:
+    memory_mb: 512
+    cpu_s: 5
+tests:
+  manifest: ../targets/logparse/tests/manifest.yaml
+sandbox:
+  enabled: true
+analysis:
+  replay_count: 3
+artifacts:
+  root: ../.dynan

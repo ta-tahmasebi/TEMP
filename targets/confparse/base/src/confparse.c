@@ -1,16 +1,4 @@
-/*
- * confparse - configuration entry parser.
- *
- * See ../../SPEC.md for the behavioural contract this program is meant to
- * implement.
- *
- * VULNERABLE BASE VERSION.
- *
- * store_value() copies a caller-supplied string into a fixed 16-byte stack
- * buffer without checking its length (SPEC rule 3 is never enforced). Both
- * parse paths - '=' and ':' - reach the same sink, so the defect is
- * reachable through two distinct inputs.
- */
+
 
 #include <ctype.h>
 #include <stdio.h>
@@ -21,6 +9,7 @@
 #define MAX_VALUE 15
 #define LINE_BUF 4096
 
+/* Trim surrounding whitespace from a string. */
 static void trim(char *s)
 {
     size_t len = strlen(s);
@@ -36,6 +25,7 @@ static void trim(char *s)
     }
 }
 
+/* Validate a configuration key. */
 static const char *check_key(const char *key)
 {
     if (key[0] == '\0') {
@@ -53,13 +43,7 @@ static const char *check_key(const char *key)
     return NULL;
 }
 
-/*
- * Copy the value into the caller's buffer.
- *
- * The length check required by SPEC rule 3 is missing here: the loop runs
- * until the source terminator regardless of how much room the destination
- * has.
- */
+/* Copy a configuration value into its destination. */
 static int store_value(char *dst, const char *src)
 {
     size_t i = 0;
@@ -71,9 +55,9 @@ static int store_value(char *dst, const char *src)
     return 0;
 }
 
-/* Destination for accepted entries; see main(). */
 static FILE *g_out;
 
+/* Write an accepted key-value pair. */
 static int emit_pair(const char *key, const char *raw_value, int lineno)
 {
     char value[MAX_VALUE + 1];
@@ -87,7 +71,7 @@ static int emit_pair(const char *key, const char *raw_value, int lineno)
     return 0;
 }
 
-/* Handles the 'key=value' form. */
+/* Parse an equals-separated entry. */
 static int parse_equals(char *line, char *sep, int lineno)
 {
     *sep = '\0';
@@ -105,7 +89,7 @@ static int parse_equals(char *line, char *sep, int lineno)
     return emit_pair(key, value, lineno);
 }
 
-/* Handles the 'key:value' form. */
+/* Parse a colon-separated entry. */
 static int parse_colon(char *line, char *sep, int lineno)
 {
     *sep = '\0';
@@ -123,6 +107,7 @@ static int parse_colon(char *line, char *sep, int lineno)
     return emit_pair(key, value, lineno);
 }
 
+/* Process one input line. */
 static int handle_line(char *line, int lineno)
 {
     char *probe = line;
@@ -130,7 +115,7 @@ static int handle_line(char *line, int lineno)
         probe++;
     }
     if (*probe == '\0' || *probe == '#') {
-        return 0; /* blank or comment: ignored, not counted */
+        return 0;
     }
 
     char *equals = strchr(line, '=');
@@ -147,6 +132,7 @@ static int handle_line(char *line, int lineno)
     return parse_colon(line, colon, lineno) == 0 ? 1 : -1;
 }
 
+/* Print command usage information. */
 static void usage(const char *program)
 {
     fprintf(stderr,
@@ -155,6 +141,7 @@ static void usage(const char *program)
             program);
 }
 
+/* Process configuration entries from a stream. */
 static int process(FILE *in)
 {
     char line[LINE_BUF];
@@ -179,6 +166,7 @@ static int process(FILE *in)
     return 0;
 }
 
+/* Run the configuration parser. */
 int main(int argc, char **argv)
 {
     const char *input_path = NULL;
