@@ -13,6 +13,24 @@ python3 -m venv .venv
 .venv/bin/dynan validate --config configs/confparse-correct.yaml --json-out result.json
 ```
 
+فرمان `validate` به‌صورت پیش‌فرض پیشرفت build، اجرای تست‌ها، تحلیل، بازپخش و مسیر
+شواهد را مرحله‌به‌مرحله نشان می‌دهد. برای دیدن نتیجهٔ تک‌تک تست‌ها `--verbose` و
+برای خروجی تک‌خطی مناسب CI گزینهٔ `--quiet` را اضافه کنید. گزینهٔ
+`--no-minimize` نیز فقط کوچک‌سازی ورودی خراب را غیرفعال می‌کند و بقیهٔ بررسی‌ها
+همچنان انجام می‌شوند.
+
+نمونهٔ خلاصهٔ نهایی:
+
+```text
+=== Validation result ===
+Verdict     : VULN_REMAINS (exit code 10)
+Meaning     : a security failure from the base version is still reproducible after the patch
+Security    : VULN_REMAINS
+Regressions : none
+Analysis    : complete
+Evidence    : .../.dynan/runs/<id>/results.json
+```
+
 ابزار چهار باینری می‌سازد: نسخهٔ پایه و وصله‌شده، هرکدام در حالت release و
 sanitized. همهٔ ورودی‌های معتبر، مرزی، نامعتبر و امنیتی روی هر چهار باینری
 اجرا می‌شوند. اجراها با Bubblewrap، محدودیت حافظه، CPU، فرایند و زمان ایزوله

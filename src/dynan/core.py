@@ -11,7 +11,6 @@ import resource
 import shutil
 import signal
 import subprocess
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +30,10 @@ EXIT = {
 RELEASE_FLAGS = "-O2 -g -fstack-protector-strong -fPIE"
 SANITIZER_FLAGS = "-O1 -g -fno-omit-frame-pointer -fstack-protector-strong -fPIE -fsanitize=address,undefined"
 LINK_FLAGS = "-Wl,-z,relro,-z,now -pie"
+Progress = Callable[[str, str], None]
+
+
+# Configuration and content fingerprints
 
 
 class ConfigError(ValueError):
@@ -104,6 +107,9 @@ def _limits(memory_mb: int, cpu_s: int) -> Callable[[], None]:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         resource.setrlimit(resource.RLIMIT_NPROC, (128, 128))
     return apply
+
+
+# Isolated process execution
 
 
 def _sandboxed(command: list[str], cwd: Path, enabled: bool) -> list[str]:
@@ -219,6 +225,9 @@ def source_diff(base: Path, patched: Path) -> tuple[str, list[str]]:
     return "".join(output), sorted(changed)
 
 
+# Build, hardening, and test execution
+
+
 def build_version(
     source: Path, version: str, profile: str, config: dict[str, Any], run_dir: Path,
 ) -> dict[str, Any]:
@@ -304,6 +313,7 @@ def run_case(
     limits = config.get("execution", {}).get("limits", {})
     env = os.environ.copy()
     if build["profile"] == "sanitized":
+        # ASan reserves a large virtual address range, so RLIMIT_AS cannot be used here.
         env["ASAN_OPTIONS"] = "abort_on_error=1:detect_leaks=0:symbolize=1"
         env["UBSAN_OPTIONS"] = "halt_on_error=1:print_stacktrace=1"
     result = execute(command, work, data=stdin, timeout=float(config.get("execution", {}).get("timeout_s", 10)),
@@ -338,6 +348,9 @@ def ddmin(data: bytes, predicate: Callable[[bytes], bool], limit: int = 100) -> 
                 break
             granularity = min(len(current), granularity * 2)
     return current
+
+
+# Finding reproduction and final decision
 
 
 def _write_reproducer(
@@ -377,8 +390,15 @@ def _decide(build_error: bool, security: str, regression: bool, complete: bool) 
     return "PASS", 0
 
 
-def validate(config_path: Path, *, minimize: bool = True) -> tuple[dict[str, Any], int]:
+def validate(
+    config_path: Path, *, minimize: bool = True, progress: Progress | None = None,
+) -> tuple[dict[str, Any], int]:
     """Validate one patch and persist all evidence as JSON artifacts."""
+    def note(stage: str, message: str) -> None:
+        """Send a structured progress event when the caller requested one."""
+        if progress:
+            progress(stage, message)
+
     config_path = config_path.resolve()
     config = load_yaml(config_path)
     for field in ("target.name", "source.base_path", "source.patched_path", "build.binary", "build.commands", "tests.manifest"):
@@ -390,11 +410,14 @@ def validate(config_path: Path, *, minimize: bool = True) -> tuple[dict[str, Any
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     run_dir = artifacts / "runs" / run_id
     run_dir.mkdir(parents=True)
+    results_path = run_dir / "results.json"
     report: dict[str, Any] = {
         "schema": 1, "run_id": run_id, "target": config["target"]["name"],
         "config": str(config_path), "started_at": datetime.now(timezone.utc).isoformat(),
+        "run_dir": str(run_dir), "results_path": str(results_path),
         "builds": [], "tests": [], "findings": [], "reproducers": [],
     }
+    note("config", f"target={report['target']} | evidence={run_dir}")
     try:
         manifest = load_yaml(manifest_path)
         cases = require(manifest, "tests")
@@ -403,28 +426,46 @@ def validate(config_path: Path, *, minimize: bool = True) -> tuple[dict[str, Any
         categories = {case.get("category") for case in cases}
         if not {"valid", "boundary", "invalid", "security"}.issubset(categories):
             raise ConfigError("tests must cover valid, boundary, invalid, and security inputs")
+        counts = {category: sum(case.get("category") == category for case in cases) for category in sorted(categories)}
+        note("tests", f"loaded {len(cases)} cases | " + ", ".join(f"{key}={value}" for key, value in counts.items()))
         diff, changed_functions = source_diff(base, patched)
         (run_dir / "diff.patch").write_text(diff)
         report["diff"] = {"path": str(run_dir / "diff.patch"), "changed_functions": changed_functions}
+        changed = ", ".join(changed_functions) or "none detected"
+        note("diff", f"changed functions: {changed}")
         builds: dict[tuple[str, str], dict[str, Any]] = {}
         for version, source in (("base", base), ("patched", patched)):
             for profile in ("release", "sanitized"):
+                note("build", f"building {version}/{profile}")
                 built = build_version(source, version, profile, config, run_dir)
                 builds[(version, profile)] = built
                 report["builds"].append(built)
+                state = "ok" if built["ok"] else "failed"
+                note("build", f"{version}/{profile}: {state}")
         build_error = not all(item["ok"] for item in builds.values())
         if build_error:
             verdict, code = _decide(True, "INCONCLUSIVE", False, False)
             report.update({"verdict": verdict, "exit_code": code, "complete": False})
-            (run_dir / "results.json").write_text(json.dumps(report, indent=2))
+            results_path.write_text(json.dumps(report, indent=2))
+            note("result", f"{verdict} ({code}) | one or more builds failed")
             return report, code
         report["hardening"] = {
             version: hardening(Path(builds[(version, "release")]["binary"]))
             for version in ("base", "patched")
         }
+        hardened = ", ".join(f"{key}={value}" for key, value in report["hardening"]["patched"].items())
+        note("hardening", f"patched/release: {hardened}")
         for build in builds.values():
+            note("run", f"running {len(cases)} cases on {build['version']}/{build['profile']}")
+            first = len(report["tests"])
             for case in cases:
                 report["tests"].append(run_case(build, case, manifest_path.parent, config, run_dir))
+            batch = report["tests"][first:]
+            passed = sum(item["oracle_passed"] for item in batch)
+            findings = sum(item["finding"] is not None for item in batch)
+            note("run", f"{build['version']}/{build['profile']}: oracle {passed}/{len(batch)} passed, findings={findings}")
+
+        # Security status is derived only from sanitizer-backed security cases.
         security_runs = [run for run in report["tests"] if run["category"] == "security" and run["profile"] == "sanitized"]
         base_findings = {run["id"]: run for run in security_runs if run["version"] == "base" and run["finding"]}
         patched_findings = {run["id"]: run for run in security_runs if run["version"] == "patched" and run["finding"]}
@@ -454,8 +495,10 @@ def validate(config_path: Path, *, minimize: bool = True) -> tuple[dict[str, Any
             report["findings"].append(finding)
         valid_ids = {case["id"] for case in cases if case["category"] == "valid"}
         release = {(run["version"], run["id"]): run for run in report["tests"] if run["profile"] == "release"}
+        # A regression exists only when the base passes an oracle that the patch fails.
         regressions = [test_id for test_id in valid_ids if release[("base", test_id)]["oracle_passed"] and not release[("patched", test_id)]["oracle_passed"]]
         replay_count = max(3, int(config.get("analysis", {}).get("replay_count", 3)))
+        note("analysis", f"security={security} | functional regressions={len(regressions)}")
         case_by_id = {case["id"]: case for case in cases}
         for version, found in (("base", base_findings), ("patched", patched_findings)):
             for test_id, original_run in found.items():
@@ -463,15 +506,19 @@ def validate(config_path: Path, *, minimize: bool = True) -> tuple[dict[str, Any
                 build = builds[(version, "sanitized")]
                 original = (manifest_path.parent / case["input_file"]).read_bytes() if "input_file" in case else str(case.get("input", "")).encode()
                 signature = original_run["finding"]["signature"]
+                note("replay", f"confirming {version}/{test_id} {replay_count} times ({signature})")
                 replayed = [run_case(build, case, manifest_path.parent, config, run_dir, original) for _ in range(replay_count)]
                 stable = all((item.get("finding") or {}).get("signature") == signature for item in replayed)
                 if not stable:
+                    note("replay", f"{version}/{test_id}: unstable, reproducer skipped")
                     continue
                 reduced = original
                 if minimize:
+                    note("minimize", f"reducing {version}/{test_id} from {len(original)} bytes")
                     reduced = ddmin(original, lambda candidate: (run_case(build, case, manifest_path.parent, config, run_dir, candidate).get("finding") or {}).get("signature") == signature)
                 bundle = _write_reproducer(original_run["finding"], original, reduced, build, case, config, run_dir, replayed)
                 report["reproducers"].append({"test": test_id, "version": version, "stable_replays": replay_count, "original_size": len(original), "minimized_size": len(reduced), "path": bundle})
+                note("reproducer", f"{version}/{test_id}: stable, {len(original)} -> {len(reduced)} bytes | {bundle}")
                 generated = artifacts / "generated-tests" / config["target"]["name"]
                 generated.mkdir(parents=True, exist_ok=True)
                 (generated / f"{version}-{test_id}.bin").write_bytes(reduced)
@@ -487,9 +534,11 @@ def validate(config_path: Path, *, minimize: bool = True) -> tuple[dict[str, Any
             "complete": complete, "verdict": verdict, "exit_code": code,
             "finished_at": datetime.now(timezone.utc).isoformat(),
         })
-        (run_dir / "results.json").write_text(json.dumps(report, indent=2))
+        results_path.write_text(json.dumps(report, indent=2))
+        note("result", f"{verdict} ({code}) | evidence={results_path}")
         return report, code
     except (ConfigError, OSError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         report.update({"verdict": "BUILD_OR_CONFIG_ERROR", "exit_code": 30, "complete": False, "error": str(exc)})
-        (run_dir / "results.json").write_text(json.dumps(report, indent=2))
+        results_path.write_text(json.dumps(report, indent=2))
+        note("result", f"BUILD_OR_CONFIG_ERROR (30) | {exc}")
         return report, 30
