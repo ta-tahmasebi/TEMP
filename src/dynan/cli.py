@@ -46,6 +46,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{report['verdict']} ({code})")
     print(f"security: {report.get('security_status', 'unknown')}")
     print(f"regressions: {', '.join(report.get('functional_regressions', [])) or 'none'}")
+    if code == 30:
+        if report.get("error"):
+            print(f"error: {report['error']}", file=sys.stderr)
+        for build in report.get("builds", []):
+            for log in build.get("logs", []):
+                if log.get("exit_code") != 0 and log.get("stderr"):
+                    print(
+                        f"{build['version']}/{build['profile']}: {log['stderr'].strip()}",
+                        file=sys.stderr,
+                    )
     if args.json_out:
         args.json_out.write_text(json.dumps(report, indent=2))
         print(f"JSON: {args.json_out}")

@@ -115,7 +115,7 @@ def _sandboxed(command: list[str], cwd: Path, enabled: bool) -> list[str]:
     return [
         "bwrap", "--ro-bind", "/", "/", "--bind", str(cwd), str(cwd),
         "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev",
-        "--unshare-pid", "--die-with-parent", "--new-session", "--chdir", str(cwd),
+        "--die-with-parent", "--new-session", "--chdir", str(cwd),
         "--", *command,
     ]
 
