@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dynan.core import ConfigError, _decide, _sandbox_unavailable, ddmin, execute, load_yaml, parse_error, source_diff
+from dynan.core import ConfigError, _decide, _nproc_ceiling, _sandbox_unavailable, ddmin, execute, load_yaml, parse_error, source_diff
 
 
 def test_duplicate_yaml_key_is_rejected(tmp_path: Path) -> None:
@@ -31,6 +31,12 @@ def test_bubblewrap_namespace_failure_is_recognized() -> None:
     """Allow a controlled fallback only for sandbox setup failures."""
     assert _sandbox_unavailable("bwrap: Creating new namespace failed: Resource temporarily unavailable\n")
     assert not _sandbox_unavailable("compiler: source file not found\n")
+
+
+def test_process_limit_includes_existing_user_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reserve child capacity instead of imposing an unsafe fixed UID-wide limit."""
+    monkeypatch.setattr("dynan.core._user_task_count", lambda: 300)
+    assert _nproc_ceiling(64) == 364
 
 
 def test_execution_retries_when_bubblewrap_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

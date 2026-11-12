@@ -97,7 +97,28 @@ def sha256_tree(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _limits(memory_mb: int, cpu_s: int) -> Callable[[], None]:
+def _user_task_count() -> int:
+    """Count visible processes and threads owned by the current user."""
+    uid, count = os.getuid(), 0
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if process.stat().st_uid == uid:
+                count += sum(1 for _ in (process / "task").iterdir())
+        except (FileNotFoundError, PermissionError):
+            continue
+    return count
+
+
+def _nproc_ceiling(additional: int) -> int:
+    """Allow a bounded number of new tasks without penalizing existing user tasks."""
+    _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+    desired = max(128, _user_task_count() + additional)
+    return desired if hard == resource.RLIM_INFINITY else min(desired, hard)
+
+
+def _limits(memory_mb: int, cpu_s: int, nproc: int) -> Callable[[], None]:
     """Create a child-process resource limiter."""
     def apply() -> None:
         """Apply resource limits in the child process."""
@@ -105,7 +126,7 @@ def _limits(memory_mb: int, cpu_s: int) -> Callable[[], None]:
             resource.setrlimit(resource.RLIMIT_AS, (memory_mb * 1024 * 1024,) * 2)
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_s, cpu_s + 1))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_NPROC, (128, 128))
+        resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
     return apply
 
 
@@ -141,16 +162,17 @@ def _sandbox_unavailable(stderr: str) -> bool:
 def execute(
     command: list[str], cwd: Path, *, data: bytes | None = None,
     timeout: float = 10, memory_mb: int = 1024, cpu_s: int = 10,
-    env: dict[str, str] | None = None, sandbox: bool = True,
+    process_budget: int = 64, env: dict[str, str] | None = None, sandbox: bool = True,
 ) -> dict[str, Any]:
     """Execute one isolated command and capture complete termination evidence."""
     started = time.monotonic()
+    nproc = _nproc_ceiling(process_budget)
     try:
         wrapped = _sandboxed(command, cwd, sandbox)
         completed = subprocess.run(
             wrapped, cwd=cwd, input=data,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
-            env=env, preexec_fn=_limits(memory_mb, cpu_s), check=False,
+            env=env, preexec_fn=_limits(memory_mb, cpu_s, nproc), check=False,
         )
         sandbox_used = sandbox
         fallback_reason = None
@@ -162,7 +184,7 @@ def execute(
             completed = subprocess.run(
                 command, cwd=cwd, input=data,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
-                env=env, preexec_fn=_limits(memory_mb, cpu_s), check=False,
+                env=env, preexec_fn=_limits(memory_mb, cpu_s, nproc), check=False,
             )
             sandbox_used = False
         code = completed.returncode
@@ -174,6 +196,7 @@ def execute(
             "duration_s": round(time.monotonic() - started, 4),
             "sandbox_requested": sandbox, "sandbox_used": sandbox_used,
             "sandbox_fallback": fallback_reason,
+            "limits": {"memory_mb": memory_mb, "cpu_s": cpu_s, "nproc": nproc},
         }
     except subprocess.TimeoutExpired as exc:
         return {
@@ -183,6 +206,7 @@ def execute(
             "duration_s": round(time.monotonic() - started, 4),
             "sandbox_requested": sandbox, "sandbox_used": sandbox,
             "sandbox_fallback": None,
+            "limits": {"memory_mb": memory_mb, "cpu_s": cpu_s, "nproc": nproc},
         }
 
 

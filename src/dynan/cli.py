@@ -58,7 +58,8 @@ def _print_test_details(report: dict[str, object]) -> None:
         )
         print(
             f"  {run['version']}/{run['profile']} {run['id']}: {state} "
-            f"({termination}, {run['duration_s']}s, sandbox={isolation})"
+            f"({termination}, {run['duration_s']}s, sandbox={isolation}, "
+            f"nproc-limit={run.get('limits', {}).get('nproc', 'unknown')})"
         )
 
 
